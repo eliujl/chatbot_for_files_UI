@@ -39,4 +39,6 @@ To use Chroma, enter the name of the Chroma collection when prompted. The chatbo
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 ## Screenshot
-![chat](https://github.com/eliujl/chatbot_for_files_UI/assets/8711788/1353e575-b813-4d93-9e44-ed625002f0ae)
+![chatbot](https://github.com/eliujl/chatbot_for_files_UI/assets/8711788/d8b6dcdb-0777-4d73-abea-ef651b41f0df)
+
+

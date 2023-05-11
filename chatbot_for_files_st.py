@@ -128,12 +128,12 @@ def get_response(query, chat_history):
     return result['answer'], result['source_documents']
 
 
-def setup_em_llm(OPENAI_API_KEY):
+def setup_em_llm(OPENAI_API_KEY, temperature):
     # Set up OpenAI embeddings
     embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
     # Use Open AI LLM with gpt-3.5-turbo.
     # Set the temperature to be 0 if you do not want it to make up things
-    llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo", streaming=True,
+    llm = ChatOpenAI(temperature=temperature, model_name="gpt-3.5-turbo", streaming=True,
                      openai_api_key=OPENAI_API_KEY)
     return embeddings, llm
 
@@ -147,11 +147,11 @@ with col2:
     r_ingest = st.radio(
         'Do you want to ingest the file(s)?', ('Yes', 'No'))
 with col3:
-    OPENAI_API_KEY = st.text_input(
-        "Enter your OpenAI API key and press Enter", type="password")
+    temperature = st.slider('Temperature', 0.0, 1.0, 0.1)
+    k_sources = st.slider('# source(s) to print out', 0, 20, 2)
 with col4:
     if OPENAI_API_KEY:
-        embeddings, llm = setup_em_llm(OPENAI_API_KEY)
+        embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature)
         if r_pinecone.lower() == 'yes' and PINECONE_API_KEY != '':
             use_pinecone = True
             pinecone_index_name = st.text_input('Enter your Pinecone index')
@@ -190,7 +190,6 @@ if docsearch_ready:
     if query:
         # Generate a reply based on the user input and chat history
         reply, source = get_response(query, chat_history)
-        print(chat_history)
         # Update the chat history with the user input and system response
         chat_history.append(('User', query))
         chat_history.append(('Bot', reply))
@@ -199,7 +198,7 @@ if docsearch_ready:
         st.text_area('Chat record:', value=chat_history_str, height=250)
         # Display sources
         for i, source_i in enumerate(source):
-            if i < 2:
+            if i < k_sources:
                 if len(source_i.page_content) > 400:
                     page_content = source_i.page_content[:400]
                 else:
@@ -211,3 +210,4 @@ if docsearch_ready:
                     st.write(source_i.metadata)
                 else:
                     st.write(f"**_Source {i+1}:_** {page_content}")
+
