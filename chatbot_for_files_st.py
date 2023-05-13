@@ -10,26 +10,24 @@ from langchain.chat_models import ChatOpenAI
 from langchain.vectorstores import Pinecone, Chroma
 from langchain.chains import ConversationalRetrievalChain
 import os
+import langchain
 import pinecone
 import streamlit as st
 import shutil
 
-# Set up OpenAI API key (from .bashrc, Windows environment variables, .env)
-OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
 
-# Set up Pinecone env
-PINECONE_API_KEY = os.environ['PINECONE_API_KEY']
-PINECONE_API_ENV = os.environ['PINECONE_API_ENV']
-pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_API_ENV)
-
+OPENAI_API_KEY = ''
+PINECONE_API_KEY = ''
+PINECONE_API_ENV = ''
 pinecone_index_name = ''
 chroma_collection_name = ''
 persist_directory = ''
-chat_history = []
 docsearch_ready = False
 directory_name = 'tmp_docs'
+langchain.verbose = False
 
 
+@st.cache_data()
 def save_file(files):
     # Remove existing files in the directory
     if os.path.exists(directory_name):
@@ -49,8 +47,8 @@ def save_file(files):
                 shutil.copyfileobj(file, f)
 
 
+@st.cache_data()
 def load_files():
-    file_path = "./tmp_docs/"
     all_texts = []
     n_files = 0
     n_char = 0
@@ -80,13 +78,14 @@ def load_files():
     return all_texts, n_texts
 
 
-def ingest(all_texts, use_pinecone, embeddings, pinecone_index_name, chroma_collection_name, persist_directory):
+@st.cache_resource()
+def ingest(_all_texts, use_pinecone, _embeddings, pinecone_index_name, chroma_collection_name, persist_directory):
     if use_pinecone:
         docsearch = Pinecone.from_texts(
-            [t.page_content for t in all_texts], embeddings, index_name=pinecone_index_name)  # add namespace=pinecone_namespace if provided
+            [t.page_content for t in _all_texts], _embeddings, index_name=pinecone_index_name)  # add namespace=pinecone_namespace if provided
     else:
         docsearch = Chroma.from_documents(
-            all_texts, embeddings, collection_name=chroma_collection_name, persist_directory=persist_directory)
+            _all_texts, _embeddings, collection_name=chroma_collection_name, persist_directory=persist_directory)
     return docsearch
 
 
@@ -139,30 +138,37 @@ def setup_em_llm(OPENAI_API_KEY, temperature):
 
 
 # Get user input of whether to use Pinecone or not
-col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+col1, col2, col3 = st.columns([1, 1, 1])
 # create the radio buttons and text input fields
 with col1:
-    r_pinecone = st.radio('Do you want to use Pinecone index?', ('Yes', 'No'))
-with col2:
+    r_pinecone = st.radio('Use Pinecone?', ('Yes', 'No'))
     r_ingest = st.radio(
-        'Do you want to ingest the file(s)?', ('Yes', 'No'))
-with col3:
+        'Ingest file(s)?', ('Yes', 'No'))
+with col2:
+    OPENAI_API_KEY = st.text_input(
+        "OpenAI API key:", type="password")
     temperature = st.slider('Temperature', 0.0, 1.0, 0.1)
     k_sources = st.slider('# source(s) to print out', 0, 20, 2)
-with col4:
+with col3:
     if OPENAI_API_KEY:
         embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature)
-        if r_pinecone.lower() == 'yes' and PINECONE_API_KEY != '':
+        if r_pinecone.lower() == 'yes':
             use_pinecone = True
-            pinecone_index_name = st.text_input('Enter your Pinecone index')
+            PINECONE_API_KEY = st.text_input(
+                "Pinecone API key:", type="password")
+            PINECONE_API_ENV = st.text_input(
+                "Pinecone API env:", type="password")
+            pinecone_index_name = st.text_input('Pinecone index:')
+            pinecone.init(api_key=PINECONE_API_KEY,
+                          environment=PINECONE_API_ENV)
         else:
             use_pinecone = False
             chroma_collection_name = st.text_input(
-                '''Not using Pinecone or empty Pinecone API key provided. 
-                Using Chroma. Enter Chroma collection name of 3-63 characters:''')
+                '''Chroma collection name of 3-63 characters:''')
             persist_directory = "./vectorstore"
 
 if pinecone_index_name or chroma_collection_name:
+    chat_history = []
     if r_ingest.lower() == 'yes':
         files = st.file_uploader('Upload Files', accept_multiple_files=True)
         if files:
@@ -186,7 +192,8 @@ if docsearch_ready:
 
     st.title('Chatbot')
     # Get user input
-    query = st.text_input('Enter your question; enter "exit" to exit')
+    query = st.text_area('Enter your question:', height=10,
+                         placeholder='Summarize the context.')
     if query:
         # Generate a reply based on the user input and chat history
         reply, source = get_response(query, chat_history)
