@@ -121,8 +121,9 @@ def setup_docsearch(use_pinecone, pinecone_index_name, embeddings, chroma_collec
     else:
         docsearch = Chroma(persist_directory=persist_directory, embedding_function=embeddings,
                            collection_name=chroma_collection_name)
-        n_texts = docsearch._client._count(
-            collection_name=chroma_collection_name)
+
+        n_texts = docsearch._collection.count()
+
     return docsearch, n_texts
 
 
@@ -131,12 +132,12 @@ def get_response(query, chat_history, CRqa):
     return result['answer'], result['source_documents']
 
 
-def setup_em_llm(OPENAI_API_KEY, temperature):
+def setup_em_llm(OPENAI_API_KEY, temperature, r_llm):
     # Set up OpenAI embeddings
     embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
-    # Use Open AI LLM with gpt-3.5-turbo.
+    # Use Open AI LLM with gpt-3.5-turbo or gpt-4.
     # Set the temperature to be 0 if you do not want it to make up things
-    llm = ChatOpenAI(temperature=temperature, model_name="gpt-3.5-turbo", streaming=True,
+    llm = ChatOpenAI(temperature=temperature, model_name=r_llm, streaming=True,
                      openai_api_key=OPENAI_API_KEY)
     return embeddings, llm
 
@@ -161,6 +162,9 @@ pinecone_index_name, chroma_collection_name, persist_directory, docsearch_ready,
 def main(pinecone_index_name, chroma_collection_name, persist_directory, docsearch_ready, directory_name):
     docsearch_ready = False
     chat_history = []
+    latest_chats = []
+    reply = ''
+    source = ''
     # Get user input of whether to use Pinecone or not
     col1, col2, col3 = st.columns([1, 1, 1])
     # create the radio buttons and text input fields
@@ -168,6 +172,9 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
         r_pinecone = st.radio('Use Pinecone?', ('Yes', 'No'))
         r_ingest = st.radio(
             'Ingest file(s)?', ('Yes', 'No'))
+        r_llm = st.multiselect(
+            'LLM:', ['gpt-3.5-turbo', 'gpt-4'], 'gpt-3.5-turbo')
+        r_llm = r_llm[0]
     with col2:
         OPENAI_API_KEY = st.text_input(
             "OpenAI API key:", type="password")
@@ -175,7 +182,7 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
         k_sources = st.slider('# source(s) to print out', 0, 20, 2)
     with col3:
         if OPENAI_API_KEY:
-            embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature)
+            embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm)
             if r_pinecone.lower() == 'yes':
                 use_pinecone = True
                 PINECONE_API_KEY = st.text_input(
@@ -215,14 +222,19 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
         CRqa = ConversationalRetrievalChain.from_llm(
             llm, retriever=retriever, return_source_documents=True)
 
-        st.title('Chatbot')
+        st.title(':blue[Chatbot]')
         # Get user input
         query = st.text_area('Enter your question:', height=10,
-                             placeholder='Summarize the context.')
-        if query:
-            # Generate a reply based on the user input and chat history
+                             placeholder='''Summarize the context. 
+                                            \nAfter typing your question, click on SUBMIT to send it to the bot.''')       
+        submitted = st.button('SUBMIT')
+
             CHAT_HISTORY_FILENAME = f"chat_history/{session_name}_chat_hist.json"
             chat_history = load_chat_history(CHAT_HISTORY_FILENAME)
+        st.markdown('<style>.my_title { font-weight: bold; color: red; }</style>', unsafe_allow_html=True)
+
+        if query and submitted:
+            # Generate a reply based on the user input and chat history
             chat_history = [(user, bot)
                             for user, bot in chat_history]
             reply, source = get_response(query, chat_history, CRqa)
@@ -230,10 +242,17 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
             chat_history.append(('User', query))
             chat_history.append(('Bot', reply))
             save_chat_history(chat_history, CHAT_HISTORY_FILENAME)
-            latest_chats = chat_history[-4:]
-            chat_history_str = '\n'.join(
-                [f'{x[0]}: {x[1]}' for x in latest_chats])
-            st.text_area('Chat record:', value=chat_history_str, height=250)
+            c = chat_history[-4:]
+            if len(chat_history) >= 4:
+                latest_chats = [c[2],c[3],c[0],c[1]]
+            else:
+                latest_chats = c
+
+        if latest_chats:   
+            chat_history_str1 = '<br>'.join([f'<span class=\"my_title\">{x[0]}:</span> {x[1]}' for x in latest_chats])        
+            st.markdown(f'<div class=\"chat-record\">{chat_history_str1}</div>', unsafe_allow_html=True)
+
+        if reply and source:
             # Display sources
             for i, source_i in enumerate(source):
                 if i < k_sources:
@@ -243,13 +262,15 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
                         page_content = source_i.page_content
                     if source_i.metadata:
                         metadata_source = source_i.metadata['source']
-                        st.write(
-                            f"**_Source {i+1}:_** {metadata_source}: {page_content}")
-                        st.write(source_i.metadata)
+                        st.markdown(f"<h3 class='my_title'>Source {i+1}: {metadata_source}</h3> <br> {page_content}", unsafe_allow_html=True)
                     else:
-                        st.write(f"**_Source {i+1}:_** {page_content}")
+                        st.markdown(f"<h3 class='my_title'>Source {i+1}: </h3> <br> {page_content}", unsafe_allow_html=True)
 
-
+        all_chats = chat_history
+        all_chat_history_str = '\n'.join(
+                [f'{x[0]}: {x[1]}' for x in all_chats])
+        st.title(':blue[All chat records]')
+        st.text_area('', value=all_chat_history_str, height=250, label_visibility='collapsed')      
 if __name__ == '__main__':
     main(pinecone_index_name, chroma_collection_name, persist_directory,
          docsearch_ready, directory_name)
