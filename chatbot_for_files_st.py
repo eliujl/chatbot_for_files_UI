@@ -6,9 +6,12 @@ from langchain.document_loaders import (
     UnstructuredFileLoader,
 )
 from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.vectorstores import Pinecone, Chroma
 from langchain.chains import ConversationalRetrievalChain
+from langchain.prompts import PromptTemplate
+from langchain.memory import ConversationBufferMemory
 import os
 import langchain
 import pinecone
@@ -19,6 +22,10 @@ import json
 OPENAI_API_KEY = ''
 PINECONE_API_KEY = ''
 PINECONE_API_ENV = ''
+gpt3p5 = 'gpt-3.5-turbo-1106'
+gpt4 = 'gpt-4-1106-preview'
+gpt_local_mistral = 'mistral_7b'
+gpt_local_llama = 'llama_13b'
 langchain.verbose = False
 
 
@@ -90,6 +97,7 @@ def ingest(_all_texts, use_pinecone, _embeddings, pinecone_index_name, chroma_co
     else:
         docsearch = Chroma.from_documents(
             _all_texts, _embeddings, collection_name=chroma_collection_name, persist_directory=persist_directory)
+
     return docsearch
 
 
@@ -111,8 +119,15 @@ def setup_docsearch(use_pinecone, pinecone_index_name, embeddings, chroma_collec
             index_client = pinecone.Index(pinecone_index_name)
             # Get the index information
             index_info = index_client.describe_index_stats()
-            namespace_name = ''
-            n_texts = index_info['namespaces'][namespace_name]['vector_count']
+            # namespace_name = ''
+            # if index_info is not None:
+            #     print(index_info)
+            #     print(index_info['namespaces'][namespace_name]['vector_count'])
+            #     print(index_info['total_vector_count'])
+            # else:
+            #     print("Index information is not available.")            
+            # n_texts = index_info['namespaces'][namespace_name]['vector_count']
+            n_texts = index_info['total_vector_count']
         else:
             raise ValueError('''Cannot find the specified Pinecone index.
             				Create one in pinecone.io or using, e.g.,
@@ -131,14 +146,69 @@ def get_response(query, chat_history, CRqa):
     result = CRqa({"question": query, "chat_history": chat_history})
     return result['answer'], result['source_documents']
 
+@st.cache_resource()
+def use_local_llm(r_llm):
+    from langchain.llms import LlamaCpp
+    from langchain.callbacks.manager import CallbackManager
+    from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+    callback_manager = CallbackManager([StreamingStdOutCallbackHandler()])
+    if r_llm == gpt_local_mistral:
+        gpt_local = 'openhermes-2-mistral-7b.Q8_0.gguf'
+    else:
+        gpt_local = 'llama-2-13b-chat.Q8_0.gguf'
+    llm = LlamaCpp( 
+        model_path='~//models//'+gpt_local,
+        temperature=0.0,
+        n_batch=300,
+        n_ctx=4000,
+        max_tokens=2000,
+        n_gpu_layers=10,
+        n_threads=12,
+        top_p=1,
+        repeat_penalty=1.15,
+        verbose=False,
+        callback_manager=callback_manager, 
+        streaming=True,
+        # verbose=True, # Verbose is required to pass to the callback manager
+    )
+    return llm
+
+
+def setup_prompt():
+        
+        template = """Answer the question in your own words as truthfully as possible from the context given to you.
+        Supply sufficient information, evidence, reasoning, source from the context, etc., to justify your answer with details and logic.
+        Think step by step and do not jump to conclusion during your reasoning at the beginning.
+        Sometimes user's question may appear to be directly related to the context but may still be indirectly related, 
+            so try your best to understand the question based on the context and chat history.
+        If questions are asked where there is no relevant context available, 
+            respond using out-of-context knowledge with 
+            "This question does not seem to be relevant to the documents. I am trying to explore knowledge outside the context."
+
+        Context: {context}
+
+        {chat_history}
+        User: {question}
+        Bot:"""
+
+        prompt = PromptTemplate(
+            input_variables=["context", "chat_history", "question"], template=template
+        )
+        return prompt
 
 def setup_em_llm(OPENAI_API_KEY, temperature, r_llm):
-    # Set up OpenAI embeddings
-    embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
-    # Use Open AI LLM with gpt-3.5-turbo or gpt-4.
-    # Set the temperature to be 0 if you do not want it to make up things
-    llm = ChatOpenAI(temperature=temperature, model_name=r_llm, streaming=True,
-                     openai_api_key=OPENAI_API_KEY)
+    if r_llm == gpt3p5 or r_llm == gpt4:
+        # Set up OpenAI embeddings
+        embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+        # Use Open AI LLM with gpt-3.5-turbo or gpt-4.
+        # Set the temperature to be 0 if you do not want it to make up things
+        llm = ChatOpenAI(temperature=temperature, model_name=r_llm, streaming=True,
+                        openai_api_key=OPENAI_API_KEY)    
+    else:    
+        #em_model_name = 'hkunlp/instructor-xl'
+        em_model_name='sentence-transformers/all-mpnet-base-v2'
+        embeddings = HuggingFaceEmbeddings(model_name=em_model_name)
+        llm = use_local_llm(r_llm)
     return embeddings, llm
 
 
@@ -165,38 +235,53 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
     latest_chats = []
     reply = ''
     source = ''
+    LLMs = [gpt3p5, gpt4, gpt_local_llama, gpt_local_mistral]
     # Get user input of whether to use Pinecone or not
     col1, col2, col3 = st.columns([1, 1, 1])
     # create the radio buttons and text input fields
     with col1:
-        r_pinecone = st.radio('Use Pinecone?', ('Yes', 'No'))
+        r_llm = st.multiselect('LLM:', LLMs, gpt3p5)        
+        if not r_llm:
+            r_llm = gpt3p5
+        else:
+            r_llm = r_llm[0]
+        if r_llm == gpt3p5 or r_llm == gpt4:
+            use_openai = True
+        else:
+            use_openai = False
+        r_pinecone = st.radio('Vector store:', ('Pinecone (online)', 'Chroma (local)'))
         r_ingest = st.radio(
             'Ingest file(s)?', ('Yes', 'No'))
-        r_llm = st.multiselect(
-            'LLM:', ['gpt-3.5-turbo', 'gpt-4'], 'gpt-3.5-turbo')
-        r_llm = r_llm[0]
+        if r_pinecone == 'Pinecone (online)':
+            use_pinecone = True
+        else:
+            use_pinecone = False
     with col2:
-        OPENAI_API_KEY = st.text_input(
-            "OpenAI API key:", type="password")
         temperature = st.slider('Temperature', 0.0, 1.0, 0.1)
         k_sources = st.slider('# source(s) to print out', 0, 20, 2)
-    with col3:
-        if OPENAI_API_KEY:
-            embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm)
-            if r_pinecone.lower() == 'yes':
-                use_pinecone = True
-                PINECONE_API_KEY = st.text_input(
-                    "Pinecone API key:", type="password")
-                PINECONE_API_ENV = st.text_input(
-                    "Pinecone API env:", type="password")
-                pinecone_index_name = st.text_input('Pinecone index:')
-                pinecone.init(api_key=PINECONE_API_KEY,
-                              environment=PINECONE_API_ENV)
+        if use_openai == True:
+            OPENAI_API_KEY = st.text_input(
+                "OpenAI API key:", type="password")
+        else:
+            OPENAI_API_KEY = ''
+            if use_pinecone == True:
+                st.write('Local GPT model (and local embedding model) is selected. Online vector store is selected.')
             else:
-                use_pinecone = False
-                chroma_collection_name = st.text_input(
-                    '''Chroma collection name of 3-63 characters:''')
-                persist_directory = "./vectorstore"
+                st.write('Local GPT model (and local embedding model) and local vector store are selected. All info remains local.')
+        embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm)
+    with col3:
+        if use_pinecone == True:
+            PINECONE_API_KEY = st.text_input(
+                "Pinecone API key:", type="password")
+            PINECONE_API_ENV = st.text_input(
+                "Pinecone API env:", type="password")
+            pinecone_index_name = st.text_input('Pinecone index:')
+            pinecone.init(api_key=PINECONE_API_KEY,
+                            environment=PINECONE_API_ENV)
+        else:
+            chroma_collection_name = st.text_input(
+                '''Chroma collection name of 3-63 characters:''')
+            persist_directory = "./vectorstore"
 
     if pinecone_index_name or chroma_collection_name:
         session_name = pinecone_index_name + chroma_collection_name
@@ -219,8 +304,19 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
         # number of sources (split-documents when ingesting files); default is 4
         k = min([20, n_texts])
         retriever = setup_retriever(docsearch, k)
+
+        #prompt = setup_prompt()
+        
+        memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True, output_key='answer')
+
         CRqa = ConversationalRetrievalChain.from_llm(
-            llm, retriever=retriever, return_source_documents=True)
+                llm, 
+                chain_type="stuff",
+                retriever=retriever, 
+                memory=memory,
+                return_source_documents=True,
+                #combine_docs_chain_kwargs={'prompt': prompt},
+                )
 
         st.title(':blue[Chatbot]')
         # Get user input
@@ -229,8 +325,8 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
                                             \nAfter typing your question, click on SUBMIT to send it to the bot.''')       
         submitted = st.button('SUBMIT')
 
-            CHAT_HISTORY_FILENAME = f"chat_history/{session_name}_chat_hist.json"
-            chat_history = load_chat_history(CHAT_HISTORY_FILENAME)
+        CHAT_HISTORY_FILENAME = f"chat_history/{session_name}_chat_hist.json"
+        chat_history = load_chat_history(CHAT_HISTORY_FILENAME)
         st.markdown('<style>.my_title { font-weight: bold; color: red; }</style>', unsafe_allow_html=True)
 
         if query and submitted:
@@ -238,6 +334,7 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
             chat_history = [(user, bot)
                             for user, bot in chat_history]
             reply, source = get_response(query, chat_history, CRqa)
+
             # Update the chat history with the user input and system response
             chat_history.append(('User', query))
             chat_history.append(('Bot', reply))
