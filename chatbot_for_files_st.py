@@ -197,7 +197,7 @@ def setup_prompt():
         return prompt
 
 def setup_em_llm(OPENAI_API_KEY, temperature, r_llm):
-    if r_llm == gpt3p5 or r_llm == gpt4:
+    if r_llm == gpt3p5 or r_llm == gpt4 and not OPENAI_API_KEY:
         # Set up OpenAI embeddings
         embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
         # Use Open AI LLM with gpt-3.5-turbo or gpt-4.

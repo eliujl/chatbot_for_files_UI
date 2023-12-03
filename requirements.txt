@@ -9,3 +9,4 @@ pytesseract
 tiktoken
 pymupdf
 tabulate
+sentence-transformers
