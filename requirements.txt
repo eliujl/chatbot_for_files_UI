@@ -10,3 +10,4 @@ tiktoken
 pymupdf
 tabulate
 sentence-transformers
+llama-cpp-python
