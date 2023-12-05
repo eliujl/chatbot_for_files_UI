@@ -24,8 +24,14 @@ PINECONE_API_KEY = ''
 PINECONE_API_ENV = ''
 gpt3p5 = 'gpt-3.5-turbo-1106'
 gpt4 = 'gpt-4-1106-preview'
-gpt_local_mistral = 'mistral_7b'
-gpt_local_llama = 'llama_13b'
+local_model_tuples = [
+        (0, 'mistral_7b', "TheBloke/OpenHermes-2-Mistral-7B-GGUF", "openhermes-2-mistral-7b.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/OpenHermes-2-Mistral-7B-GGUF"),
+        (1, 'mistral_7b_inst_small', "TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q2_K.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
+        (2, 'mistral_7b_inst_med', "TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
+        (3, 'llama_13b_small', "TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q4_K_M.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
+        (4, 'llama_13b_med', "TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q8_0.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
+    ]
+local_model_names = [t[1] for t in local_model_tuples]
 langchain.verbose = False
 
 
@@ -151,18 +157,9 @@ def use_local_llm(r_llm, local_llm_path):
     from langchain.callbacks.manager import CallbackManager
     from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
     from huggingface_hub import hf_hub_download
-    model_tuples = [
-            ("TheBloke/OpenHermes-2-Mistral-7B-GGUF", "openhermes-2-mistral-7b.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/OpenHermes-2-Mistral-7B-GGUF"),
-            ("TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q2_K.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
-            ("TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
-            ("TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q4_K_M.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
-            ("TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q8_0.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
-        ]
     callback_manager = CallbackManager([StreamingStdOutCallbackHandler()])
-    if r_llm == gpt_local_mistral:
-        model_name, model_file, model_type, model_link = model_tuples[0]
-    else:
-        model_name, model_file, model_type, model_link = model_tuples[3]
+    entry = local_model_names.index(r_llm)
+    model_id, local_model_name, model_name, model_file, model_type, model_link = local_model_tuples[entry]
     model_path = os.path.join( local_llm_path, model_name, model_file )
     model_path = os.path.normpath( model_path )
     if not os.path.exists(model_path):
@@ -222,14 +219,11 @@ def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path):
         # Set the temperature to be 0 if you do not want it to make up things
         llm = ChatOpenAI(temperature=temperature, model_name=r_llm, streaming=True,
                         openai_api_key=OPENAI_API_KEY)    
-    elif r_llm == gpt_local_mistral or r_llm == gpt_local_llama:     
+    else:     
         #em_model_name = 'hkunlp/instructor-xl'
         em_model_name='sentence-transformers/all-mpnet-base-v2'
         embeddings = HuggingFaceEmbeddings(model_name=em_model_name)
         llm = use_local_llm(r_llm, local_llm_path)
-    else:
-        embeddings = []
-        llm = []
     return embeddings, llm
 
 
@@ -256,18 +250,14 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
     latest_chats = []
     reply = ''
     source = ''
-    LLMs = [gpt3p5, gpt4, gpt_local_llama, gpt_local_mistral]
+    LLMs = [gpt3p5, gpt4] + local_model_names
     local_llm_path = './models/'
     user_llm_path = ''
     # Get user input of whether to use Pinecone or not
     col1, col2, col3 = st.columns([1, 1, 1])
     # create the radio buttons and text input fields
     with col1:
-        r_llm = st.multiselect(label='LLM:', options=LLMs, default=gpt3p5, max_selections=1)        
-        if not r_llm:
-            r_llm = gpt3p5
-        else:
-            r_llm = r_llm[0]
+        r_llm = st.radio(label='LLM:', options=LLMs)
         if r_llm == gpt3p5 or r_llm == gpt4:
             use_openai = True
         else:
