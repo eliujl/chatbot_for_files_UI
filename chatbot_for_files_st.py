@@ -189,27 +189,36 @@ def use_local_llm(r_llm, local_llm_path):
     return llm
 
 
-def setup_prompt():
-        
-        template = """Answer the question in your own words as truthfully as possible from the context given to you.
+def setup_prompt(r_llm):
+    B_INST, E_INST = "[INST]", "[/INST]"
+    B_SYS_LLAMA, E_SYS_LLAMA = "<<SYS>>\n", "\n<</SYS>>\n\n"
+    B_SYS_MIS, E_SYS_MIS = "<s> ", "</s> "
+    system_prompt = """Answer the question in your own words as truthfully as possible from the context given to you.
         Supply sufficient information, evidence, reasoning, source from the context, etc., to justify your answer with details and logic.
         Think step by step and do not jump to conclusion during your reasoning at the beginning.
         Sometimes user's question may appear to be directly related to the context but may still be indirectly related, 
             so try your best to understand the question based on the context and chat history.
         If questions are asked where there is no relevant context available, 
             respond using out-of-context knowledge with 
-            "This question does not seem to be relevant to the documents. I am trying to explore knowledge outside the context."
-
+            "This question does not seem to be relevant to the documents. I am trying to explore knowledge outside the context." """
+    instruction = """
         Context: {context}
 
-        {chat_history}
+        Chat history: {chat_history}
         User: {question}
-        Bot:"""
-
-        prompt = PromptTemplate(
-            input_variables=["context", "chat_history", "question"], template=template
-        )
-        return prompt
+        Bot: answer """
+    if r_llm == gpt3p5 or r_llm == gpt4:
+        template = system_prompt + instruction
+    else:
+        entry = local_model_names.index(r_llm)
+        if local_model_tuples[entry][4] == 'llama':
+            template = B_INST + B_SYS_LLAMA + system_prompt + E_SYS_LLAMA + instruction + E_INST
+        else:
+            template = B_SYS_MIS + B_INST + system_prompt + E_INST + E_SYS_MIS + B_INST + instruction + E_INST
+    prompt = PromptTemplate(
+        input_variables=["context", "chat_history", "question"], template=template
+    )
+    return prompt
 
 def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path):
     if (r_llm == gpt3p5 or r_llm == gpt4) and OPENAI_API_KEY:
@@ -325,18 +334,15 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
         # number of sources (split-documents when ingesting files); default is 4
         k = min([20, n_texts])
         retriever = setup_retriever(docsearch, k)
-
-        #prompt = setup_prompt()
-        
+        prompt = setup_prompt(r_llm)        
         memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True, output_key='answer')
-
         CRqa = ConversationalRetrievalChain.from_llm(
                 llm, 
                 chain_type="stuff",
                 retriever=retriever, 
                 memory=memory,
                 return_source_documents=True,
-                #combine_docs_chain_kwargs={'prompt': prompt},
+                combine_docs_chain_kwargs={'prompt': prompt},
                 )
 
         st.title(':blue[Chatbot]')
