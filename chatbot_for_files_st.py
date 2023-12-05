@@ -121,9 +121,7 @@ def setup_docsearch(use_pinecone, pinecone_index_name, embeddings, chroma_collec
             index_info = index_client.describe_index_stats()
             # namespace_name = ''
             # if index_info is not None:
-            #     print(index_info)
             #     print(index_info['namespaces'][namespace_name]['vector_count'])
-            #     print(index_info['total_vector_count'])
             # else:
             #     print("Index information is not available.")            
             # n_texts = index_info['namespaces'][namespace_name]['vector_count']
@@ -146,18 +144,38 @@ def get_response(query, chat_history, CRqa):
     result = CRqa({"question": query, "chat_history": chat_history})
     return result['answer'], result['source_documents']
 
+
 @st.cache_resource()
-def use_local_llm(r_llm):
+def use_local_llm(r_llm, local_llm_path):
     from langchain.llms import LlamaCpp
     from langchain.callbacks.manager import CallbackManager
     from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+    from huggingface_hub import hf_hub_download
+    model_tuples = [
+            ("TheBloke/OpenHermes-2-Mistral-7B-GGUF", "openhermes-2-mistral-7b.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/OpenHermes-2-Mistral-7B-GGUF"),
+            ("TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q2_K.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
+            ("TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
+            ("TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q4_K_M.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
+            ("TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q8_0.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
+        ]
     callback_manager = CallbackManager([StreamingStdOutCallbackHandler()])
     if r_llm == gpt_local_mistral:
-        gpt_local = 'openhermes-2-mistral-7b.Q8_0.gguf'
+        model_name, model_file, model_type, model_link = model_tuples[0]
     else:
-        gpt_local = 'llama-2-13b-chat.Q8_0.gguf'
+        model_name, model_file, model_type, model_link = model_tuples[3]
+    model_path = os.path.join( local_llm_path, model_name, model_file )
+    model_path = os.path.normpath( model_path )
+    if not os.path.exists(model_path):
+        print("model not existing at ", model_path, "\n")
+        model_path = hf_hub_download(repo_id=model_name, filename=model_file, repo_type="model",
+                #cache_dir=local_llm_path, 
+                local_dir=local_llm_path, local_dir_use_symlinks=False)
+        print("\n model downloaded at path=",model_path)
+    else:
+        print("model existing at ", model_path)
+    
     llm = LlamaCpp( 
-        model_path='~//models//'+gpt_local,
+        model_path=model_path,
         temperature=0.0,
         n_batch=300,
         n_ctx=4000,
@@ -196,7 +214,7 @@ def setup_prompt():
         )
         return prompt
 
-def setup_em_llm(OPENAI_API_KEY, temperature, r_llm):
+def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path):
     if (r_llm == gpt3p5 or r_llm == gpt4) and OPENAI_API_KEY:
         # Set up OpenAI embeddings
         embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
@@ -204,11 +222,14 @@ def setup_em_llm(OPENAI_API_KEY, temperature, r_llm):
         # Set the temperature to be 0 if you do not want it to make up things
         llm = ChatOpenAI(temperature=temperature, model_name=r_llm, streaming=True,
                         openai_api_key=OPENAI_API_KEY)    
-    else:    
+    elif r_llm == gpt_local_mistral or r_llm == gpt_local_llama:     
         #em_model_name = 'hkunlp/instructor-xl'
         em_model_name='sentence-transformers/all-mpnet-base-v2'
         embeddings = HuggingFaceEmbeddings(model_name=em_model_name)
-        llm = use_local_llm(r_llm)
+        llm = use_local_llm(r_llm, local_llm_path)
+    else:
+        embeddings = []
+        llm = []
     return embeddings, llm
 
 
@@ -236,11 +257,13 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
     reply = ''
     source = ''
     LLMs = [gpt3p5, gpt4, gpt_local_llama, gpt_local_mistral]
+    local_llm_path = './models/'
+    user_llm_path = ''
     # Get user input of whether to use Pinecone or not
     col1, col2, col3 = st.columns([1, 1, 1])
     # create the radio buttons and text input fields
     with col1:
-        r_llm = st.multiselect('LLM:', LLMs, gpt3p5)        
+        r_llm = st.multiselect(label='LLM:', options=LLMs, default=gpt3p5, max_selections=1)        
         if not r_llm:
             r_llm = gpt3p5
         else:
@@ -268,7 +291,6 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
                 st.write('Local GPT model (and local embedding model) is selected. Online vector store is selected.')
             else:
                 st.write('Local GPT model (and local embedding model) and local vector store are selected. All info remains local.')
-        embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm)
     with col3:
         if use_pinecone == True:
             PINECONE_API_KEY = st.text_input(
@@ -282,8 +304,17 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
             chroma_collection_name = st.text_input(
                 '''Chroma collection name of 3-63 characters:''')
             persist_directory = "./vectorstore"
+        if use_openai == False:
+            user_llm_path = st.text_input(
+                "Path for local model (TO BE DOWNLOADED IF NOT EXISTING), type 'default' to use default path:",
+                placeholder="default")
+            if 'default' in user_llm_path:
+                user_llm_path = local_llm_path
 
-    if pinecone_index_name or chroma_collection_name:
+    if ( (pinecone_index_name or chroma_collection_name) 
+        and ( (use_openai and OPENAI_API_KEY) or (not use_openai and user_llm_path) ) ):
+        embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm, user_llm_path)    
+    #if ( pinecone_index_name or chroma_collection_name ) and embeddings and llm:
         session_name = pinecone_index_name + chroma_collection_name
         if r_ingest.lower() == 'yes':
             files = st.file_uploader(
@@ -367,7 +398,7 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
         all_chat_history_str = '\n'.join(
                 [f'{x[0]}: {x[1]}' for x in all_chats])
         st.title(':blue[All chat records]')
-        st.text_area('', value=all_chat_history_str, height=250, label_visibility='collapsed')      
+        st.text_area('Chat records in ascending order:', value=all_chat_history_str, height=250, label_visibility='collapsed')      
 if __name__ == '__main__':
     main(pinecone_index_name, chroma_collection_name, persist_directory,
          docsearch_ready, directory_name)
