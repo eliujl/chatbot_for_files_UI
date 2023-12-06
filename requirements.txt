@@ -12,3 +12,4 @@ tabulate
 sentence-transformers
 llama-cpp-python
 huggingface-hub
+python-docx
