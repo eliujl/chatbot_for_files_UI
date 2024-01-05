@@ -30,6 +30,8 @@ local_model_tuples = [
         (2, 'mistral_7b_inst_med', "TheBloke/Mistral-7B-Instruct-v0.1-GGUF", "mistral-7b-instruct-v0.1.Q8_0.gguf", "mistral", "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.1-GGUF"),
         (3, 'llama_13b_small', "TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q4_K_M.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
         (4, 'llama_13b_med', "TheBloke/Llama-2-13B-chat-GGUF", "llama-2-13b-chat.Q8_0.gguf", "llama", "https://huggingface.co/TheBloke/Llama-2-13B-chat-GGUF"),
+        (5, 'mixtral', "TheBloke/Mixtral-8x7B-v0.1-GGUF", "mixtral-8x7b-v0.1.Q8_0.gguf", "mixtral", "https://huggingface.co/TheBloke/Mixtral-8x7B-v0.1-GGUF"),
+        (6, 'mixtral_inst', "TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF", "mixtral-8x7b-instruct-v0.1.Q2_K.gguf", "mixtral", "https://huggingface.co/TheBloke/Mixtral-8x7B-Instruct-v0.1-GGUF"),
     ]
 local_model_names = [t[1] for t in local_model_tuples]
 langchain.verbose = False
@@ -162,28 +164,33 @@ def use_local_llm(r_llm, local_llm_path):
     model_id, local_model_name, model_name, model_file, model_type, model_link = local_model_tuples[entry]
     model_path = os.path.join( local_llm_path, model_name, model_file )
     model_path = os.path.normpath( model_path )
+    model_dir = os.path.join( local_llm_path, model_name )
+    model_dir = os.path.normpath( model_dir )
     if not os.path.exists(model_path):
         print("model not existing at ", model_path, "\n")
         model_path = hf_hub_download(repo_id=model_name, filename=model_file, repo_type="model",
                 #cache_dir=local_llm_path, 
-                local_dir=local_llm_path, local_dir_use_symlinks=False)
+                #local_dir=local_llm_path, 
+                local_dir=model_dir,
+                local_dir_use_symlinks=False)
         print("\n model downloaded at path=",model_path)
     else:
         print("model existing at ", model_path)
     
     llm = LlamaCpp( 
         model_path=model_path,
-        temperature=0.0,
-        n_batch=300,
+        # temperature=0.0,
+        # n_batch=300,
         n_ctx=4000,
         max_tokens=2000,
-        n_gpu_layers=10,
-        n_threads=12,
-        top_p=1,
-        repeat_penalty=1.15,
-        verbose=False,
-        callback_manager=callback_manager, 
-        streaming=True,
+        # n_gpu_layers=10,
+        # n_threads=12,
+        # top_p=1,
+        # repeat_penalty=1.15,
+        # verbose=False,
+        # callback_manager=callback_manager, 
+        # streaming=True,
+        # chat_format="llama-2",
         # verbose=True, # Verbose is required to pass to the callback manager
     )
     return llm
@@ -193,6 +200,7 @@ def setup_prompt(r_llm):
     B_INST, E_INST = "[INST]", "[/INST]"
     B_SYS_LLAMA, E_SYS_LLAMA = "<<SYS>>\n", "\n<</SYS>>\n\n"
     B_SYS_MIS, E_SYS_MIS = "<s> ", "</s> "
+    B_SYS_MIXTRAL, E_SYS_MIXTRAL = "<s>[INST]", "[/INST]</s>[INST]"
     system_prompt = """Answer the question in your own words as truthfully as possible from the context given to you.
         Supply sufficient information, evidence, reasoning, source from the context, etc., to justify your answer with details and logic.
         Think step by step and do not jump to conclusion during your reasoning at the beginning.
@@ -213,8 +221,13 @@ def setup_prompt(r_llm):
         entry = local_model_names.index(r_llm)
         if local_model_tuples[entry][4] == 'llama':
             template = B_INST + B_SYS_LLAMA + system_prompt + E_SYS_LLAMA + instruction + E_INST
-        else:
+        elif local_model_tuples[entry][4] == 'mistral':
             template = B_SYS_MIS + B_INST + system_prompt + E_INST + E_SYS_MIS + B_INST + instruction + E_INST
+        elif local_model_tuples[entry][4] == 'mixtral':
+            template = B_SYS_MIXTRAL + system_prompt + E_SYS_MIXTRAL + B_INST + instruction + E_INST
+        else:
+            # Handle other models or raise an exception
+            pass
     prompt = PromptTemplate(
         input_variables=["context", "chat_history", "question"], template=template
     )
