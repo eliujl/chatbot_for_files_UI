@@ -9,7 +9,8 @@ from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain.chat_models import ChatOpenAI
 from langchain.vectorstores import Pinecone, Chroma
-from langchain.chains import ConversationalRetrievalChain
+from langchain.chains import ConversationalRetrievalChain, LLMChain
+from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferMemory
 import os
@@ -196,12 +197,12 @@ def use_local_llm(r_llm, local_llm_path):
     return llm
 
 
-def setup_prompt(r_llm):
+def setup_prompt(r_llm, usage):
     B_INST, E_INST = "[INST]", "[/INST]"
     B_SYS_LLAMA, E_SYS_LLAMA = "<<SYS>>\n", "\n<</SYS>>\n\n"
     B_SYS_MIS, E_SYS_MIS = "<s> ", "</s> "
     B_SYS_MIXTRAL, E_SYS_MIXTRAL = "<s>[INST]", "[/INST]</s>[INST]"
-    system_prompt = """Answer the question in your own words as truthfully as possible from the context given to you.
+    system_prompt_rag = """Answer the question in your own words as truthfully as possible from the context given to you.
         Supply sufficient information, evidence, reasoning, source from the context, etc., to justify your answer with details and logic.
         Think step by step and do not jump to conclusion during your reasoning at the beginning.
         Sometimes user's question may appear to be directly related to the context but may still be indirectly related, 
@@ -209,12 +210,35 @@ def setup_prompt(r_llm):
         If questions are asked where there is no relevant context available, 
             respond using out-of-context knowledge with 
             "This question does not seem to be relevant to the documents. I am trying to explore knowledge outside the context." """
-    instruction = """
-        Context: {context}
+    system_prompt_chat = """Answer the question in your own words.
+        Supply sufficient information, evidence, reasoning, source from the context, etc., to justify your answer with details and logic.
+        Think step by step and do not jump to conclusion during your reasoning at the beginning.
+        """
+    system_prompt_task = """You will be given a task, and you are an expert in that task. 
+        Perform the task for the given context, and output the result. Do not include extra descriptions. Just output the desired result defined by the task.
+        Example: You are a professional translator and are given a translation task. Then you translate the text in the context and output only the translated text.
+        Example: You are a professional proofreader and are given a proofreading task. Then you proofread the text in the context and output only the translated text.
+        """    
+    if usage == 'RAG':
+        system_prompt = system_prompt_rag
+        instruction = """
+            Context: {context}
 
-        Chat history: {chat_history}
-        User: {question}
-        Bot: answer """
+            Chat history: {chat_history}
+            User: {question}
+            Bot: answer """
+    elif usage == 'Chat':
+        system_prompt = system_prompt_chat
+        instruction = """
+            Chat history: {chat_history}
+            User: {question}
+            Bot: answer """
+    elif usage == 'Task':
+        system_prompt = system_prompt_task
+        instruction = """
+            Context: {context}
+            User: {question}
+            Bot: answer """        
     if r_llm == gpt3p5 or r_llm == gpt4:
         template = system_prompt + instruction
     else:
@@ -228,9 +252,18 @@ def setup_prompt(r_llm):
         else:
             # Handle other models or raise an exception
             pass
-    prompt = PromptTemplate(
-        input_variables=["context", "chat_history", "question"], template=template
-    )
+    if usage == 'RAG':
+        prompt = PromptTemplate(
+            input_variables=["context", "chat_history", "question"], template=template
+        )
+    elif usage == 'Chat':
+        prompt = PromptTemplate(
+            input_variables=["chat_history", "question"], template=template
+        )
+    elif usage == 'Task':
+        prompt = PromptTemplate(
+            input_variables=["context", "question"], template=template
+        )
     return prompt
 
 def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path):
@@ -273,49 +306,59 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
     reply = ''
     source = ''
     LLMs = [gpt3p5, gpt4] + local_model_names
+    usage = 'RAG'
     local_llm_path = './models/'
     user_llm_path = ''
     # Get user input of whether to use Pinecone or not
     col1, col2, col3 = st.columns([1, 1, 1])
     # create the radio buttons and text input fields
     with col1:
+        usage = st.radio('Usage: RAG for ingested files, chat (no files), or task (for all ingested texts)', ('RAG', 'Chat', 'Task'))
+        temperature = st.slider('Temperature', 0.0, 1.0, 0.1)
+        if usage == 'RAG':
+            r_pinecone = st.radio('Vector store:', ('Pinecone (online)', 'Chroma (local)'))
+            k_sources = st.slider('# source(s) to print out', 0, 20, 2)
+            r_ingest = st.radio('Ingest file(s)?', ('Yes', 'No'))
+            if r_pinecone == 'Pinecone (online)':
+                use_pinecone = True
+            else:
+                use_pinecone = False                
+        if usage == 'Task':
+            r_ingest = 'Yes'
+       
+    with col2:
         r_llm = st.radio(label='LLM:', options=LLMs)
         if r_llm == gpt3p5 or r_llm == gpt4:
             use_openai = True
         else:
-            use_openai = False
-        r_pinecone = st.radio('Vector store:', ('Pinecone (online)', 'Chroma (local)'))
-        r_ingest = st.radio(
-            'Ingest file(s)?', ('Yes', 'No'))
-        if r_pinecone == 'Pinecone (online)':
-            use_pinecone = True
-        else:
-            use_pinecone = False
-    with col2:
-        temperature = st.slider('Temperature', 0.0, 1.0, 0.1)
-        k_sources = st.slider('# source(s) to print out', 0, 20, 2)
+            use_openai = False             
         if use_openai == True:
             OPENAI_API_KEY = st.text_input(
                 "OpenAI API key:", type="password")
         else:
             OPENAI_API_KEY = ''
-            if use_pinecone == True:
+            if usage == 'RAG' and use_pinecone == True:
                 st.write('Local GPT model (and local embedding model) is selected. Online vector store is selected.')
-            else:
+            elif usage == 'RAG' and use_pinecone == False:
                 st.write('Local GPT model (and local embedding model) and local vector store are selected. All info remains local.')
+            else:
+                st.write('Local GPT model is selected. All info remains local.')
     with col3:
-        if use_pinecone == True:
-            PINECONE_API_KEY = st.text_input(
-                "Pinecone API key:", type="password")
-            PINECONE_API_ENV = st.text_input(
-                "Pinecone API env:", type="password")
-            pinecone_index_name = st.text_input('Pinecone index:')
-            pinecone.init(api_key=PINECONE_API_KEY,
-                            environment=PINECONE_API_ENV)
+        if usage == 'RAG':
+            if use_pinecone == True:
+                PINECONE_API_KEY = st.text_input(
+                    "Pinecone API key:", type="password")
+                PINECONE_API_ENV = st.text_input(
+                    "Pinecone API env:", type="password")
+                pinecone_index_name = st.text_input('Pinecone index:')
+                pinecone.init(api_key=PINECONE_API_KEY,
+                                environment=PINECONE_API_ENV)
+            else:
+                chroma_collection_name = st.text_input(
+                    '''Chroma collection name of 3-63 characters:''')
+                persist_directory = "./vectorstore"
         else:
-            chroma_collection_name = st.text_input(
-                '''Chroma collection name of 3-63 characters:''')
-            persist_directory = "./vectorstore"
+            hist_fn = st.text_input('Chat history filename')
         if use_openai == False:
             user_llm_path = st.text_input(
                 "Path for local model (TO BE DOWNLOADED IF NOT EXISTING), type 'default' to use default path:",
@@ -323,45 +366,61 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
             if 'default' in user_llm_path:
                 user_llm_path = local_llm_path
 
-    if ( (pinecone_index_name or chroma_collection_name) 
+    if ( (pinecone_index_name or chroma_collection_name or usage == 'Task' or usage == 'Chat') 
         and ( (use_openai and OPENAI_API_KEY) or (not use_openai and user_llm_path) ) ):
         embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm, user_llm_path)    
     #if ( pinecone_index_name or chroma_collection_name ) and embeddings and llm:
-        session_name = pinecone_index_name + chroma_collection_name
-        if r_ingest.lower() == 'yes':
-            files = st.file_uploader(
-                'Upload Files', accept_multiple_files=True)
-            if files:
-                save_file(files)
-                all_texts, n_texts = load_files()
-                docsearch = ingest(all_texts, use_pinecone, embeddings, pinecone_index_name,
-                                   chroma_collection_name, persist_directory)
+        session_name = pinecone_index_name + chroma_collection_name + hist_fn
+        if usage != 'Chat':
+            if r_ingest.lower() == 'yes':
+                files = st.file_uploader(
+                    'Upload Files', accept_multiple_files=True)
+                if files:
+                    save_file(files)
+                    all_texts, n_texts = load_files()
+                    if usage == 'RAG':
+                        docsearch = ingest(all_texts, use_pinecone, embeddings, pinecone_index_name,
+                                    chroma_collection_name, persist_directory)
+                    docsearch_ready = True
+            else:
+                st.write(
+                    'No data is to be ingested. Make sure the Pinecone index or Chroma collection name you provided contains data.')
+                docsearch, n_texts = setup_docsearch(use_pinecone, pinecone_index_name,
+                                                    embeddings, chroma_collection_name, persist_directory)
                 docsearch_ready = True
         else:
-            st.write(
-                'No data is to be ingested. Make sure the Pinecone index or Chroma collection name you provided contains data.')
-            docsearch, n_texts = setup_docsearch(use_pinecone, pinecone_index_name,
-                                                 embeddings, chroma_collection_name, persist_directory)
             docsearch_ready = True
     if docsearch_ready:
-        # number of sources (split-documents when ingesting files); default is 4
-        k = min([20, n_texts])
-        retriever = setup_retriever(docsearch, k)
-        prompt = setup_prompt(r_llm)        
+        prompt = setup_prompt(r_llm, usage)      
+        #if usage == 'RAG' or usage == 'Chat':
         memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True, output_key='answer')
-        CRqa = ConversationalRetrievalChain.from_llm(
-                llm, 
-                chain_type="stuff",
-                retriever=retriever, 
-                memory=memory,
-                return_source_documents=True,
-                combine_docs_chain_kwargs={'prompt': prompt},
-                )
-
+        if usage == 'RAG':
+            # number of sources (split-documents when ingesting files); default is 4
+            k = min([20, n_texts])
+            retriever = setup_retriever(docsearch, k)
+            CRqa = ConversationalRetrievalChain.from_llm(
+                    llm, 
+                    chain_type="stuff",
+                    retriever=retriever, 
+                    memory=memory,
+                    return_source_documents=True,
+                    combine_docs_chain_kwargs={'prompt': prompt},
+                    )
+        elif usage == 'Chat':   
+            CRqa = LLMChain(
+                    llm=llm, 
+                    prompt=prompt,                        
+                    )
+        elif usage == 'Task':                
+            CRqa = load_qa_chain(
+                    llm=llm, 
+                    chain_type="stuff",
+                    prompt=prompt
+                    )
         st.title(':blue[Chatbot]')
         # Get user input
         query = st.text_area('Enter your question:', height=10,
-                             placeholder='''Summarize the context. 
+                             placeholder='''Summarize the context.
                                             \nAfter typing your question, click on SUBMIT to send it to the bot.''')       
         submitted = st.button('SUBMIT')
 
@@ -373,8 +432,16 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
             # Generate a reply based on the user input and chat history
             chat_history = [(user, bot)
                             for user, bot in chat_history]
-            reply, source = get_response(query, chat_history, CRqa)
-
+            if usage == 'RAG':
+                reply, source = get_response(query, chat_history, CRqa)
+            elif usage == 'Chat':
+                reply = CRqa({"question": query, "chat_history": chat_history, "return_only_outputs": True})
+                reply = reply['text']
+            elif usage == 'Task':
+                reply = []
+                for a_text in all_texts:
+                    output_text = CRqa.run(input_documents=[a_text], question=query )                    
+                    reply.append ( output_text )
             # Update the chat history with the user input and system response
             chat_history.append(('User', query))
             chat_history.append(('Bot', reply))
@@ -389,7 +456,7 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
             chat_history_str1 = '<br>'.join([f'<span class=\"my_title\">{x[0]}:</span> {x[1]}' for x in latest_chats])        
             st.markdown(f'<div class=\"chat-record\">{chat_history_str1}</div>', unsafe_allow_html=True)
 
-        if reply and source:
+        if usage == 'RAG' and reply and source:
             # Display sources
             for i, source_i in enumerate(source):
                 if i < k_sources:
