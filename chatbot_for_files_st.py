@@ -311,6 +311,7 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
     usage = 'RAG'
     local_llm_path = './models/'
     user_llm_path = ''
+    hist_fn = ''
     # Get user input of whether to use Pinecone or not
     col1, col2, col3 = st.columns([1, 1, 1])
     # create the radio buttons and text input fields
