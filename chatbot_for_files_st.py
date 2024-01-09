@@ -155,7 +155,7 @@ def get_response(query, chat_history, CRqa):
 
 
 @st.cache_resource()
-def use_local_llm(r_llm, local_llm_path):
+def use_local_llm(r_llm, local_llm_path, temperature):
     from langchain.llms import LlamaCpp
     from langchain.callbacks.manager import CallbackManager
     from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
@@ -180,7 +180,7 @@ def use_local_llm(r_llm, local_llm_path):
     
     llm = LlamaCpp( 
         model_path=model_path,
-        # temperature=0.0,
+        temperature=temperature,
         # n_batch=300,
         n_ctx=4000,
         max_tokens=2000,
@@ -266,7 +266,7 @@ def setup_prompt(r_llm, usage):
         )
     return prompt
 
-def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path):
+def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path, usage):
     if (r_llm == gpt3p5 or r_llm == gpt4) and OPENAI_API_KEY:
         # Set up OpenAI embeddings
         embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
@@ -275,10 +275,12 @@ def setup_em_llm(OPENAI_API_KEY, temperature, r_llm, local_llm_path):
         llm = ChatOpenAI(temperature=temperature, model_name=r_llm, streaming=True,
                         openai_api_key=OPENAI_API_KEY)    
     else:     
-        #em_model_name = 'hkunlp/instructor-xl'
-        em_model_name='sentence-transformers/all-mpnet-base-v2'
-        embeddings = HuggingFaceEmbeddings(model_name=em_model_name)
-        llm = use_local_llm(r_llm, local_llm_path)
+        if usage == 'RAG':
+            em_model_name='sentence-transformers/all-mpnet-base-v2'
+            embeddings = HuggingFaceEmbeddings(model_name=em_model_name)
+        else:
+            embeddings = []
+        llm = use_local_llm(r_llm, local_llm_path, temperature)
     return embeddings, llm
 
 
@@ -368,7 +370,7 @@ def main(pinecone_index_name, chroma_collection_name, persist_directory, docsear
 
     if ( (pinecone_index_name or chroma_collection_name or usage == 'Task' or usage == 'Chat') 
         and ( (use_openai and OPENAI_API_KEY) or (not use_openai and user_llm_path) ) ):
-        embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm, user_llm_path)    
+        embeddings, llm = setup_em_llm(OPENAI_API_KEY, temperature, r_llm, user_llm_path, usage)    
     #if ( pinecone_index_name or chroma_collection_name ) and embeddings and llm:
         session_name = pinecone_index_name + chroma_collection_name + hist_fn
         if usage != 'Chat':
